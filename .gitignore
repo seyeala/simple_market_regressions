@@ -1,0 +1,39 @@
+# Secrets and environment
+.env
+.env.*
+!.env.example
+.secrets/
+*token*.json
+*tokens*.json
+schwab_tokens.json
+
+# Data artifacts
+data/raw/
+data/processed/
+artifacts/
+runs/
+outputs/
+
+# Model artifacts
+*.weights.h5
+model.weights.h5
+scaler.json
+metadata.json
+metrics.json
+training_history.csv
+*.keras
+*.h5
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Logs
+logs/
+*.log

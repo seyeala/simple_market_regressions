@@ -1,0 +1,17 @@
+{
+  "name": "ewy_kospi_example",
+  "auth": {"provider": "csv"},
+  "assets": [
+    {"name": "source_etf", "symbol": "EWY", "provider": "csv", "csv_path": "data/raw/ewy.csv"},
+    {"name": "source_reference", "symbol": "SPY", "provider": "csv", "csv_path": "data/raw/spy.csv"},
+    {"name": "target_index", "symbol": "KOSPI", "provider": "target_csv", "csv_path": "data/raw/kospi.csv"},
+    {"name": "fx_rate", "symbol": "USDKRW", "provider": "fx_csv", "csv_path": "data/raw/usdkrw.csv"},
+    {"name": "fx_reference", "symbol": "USDKRW_REF", "provider": "fx_csv", "csv_path": "data/raw/usdkrw_ref.csv"}
+  ],
+  "features": [
+    {"name": "source_relative_return", "signal_asset": "source_etf", "reference_asset": "source_reference", "kind": "source_return"},
+    {"name": "fx_relative_return", "signal_asset": "fx_rate", "reference_asset": "fx_reference", "kind": "fx_return"}
+  ],
+  "target": {"asset": "target_index", "label": "target_next_return"},
+  "model": {"epochs": 25, "batch_size": 16, "validation_fraction": 0.2, "learning_rate": 0.01}
+}

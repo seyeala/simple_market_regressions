@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "cross-market-regression"
+name = "cross-market-regressions"
 version = "0.1.0"
 description = "Reusable front-face cross-market linear regression framework"
 readme = "README.md"
@@ -11,11 +11,12 @@ requires-python = ">=3.10"
 dependencies = [
   "numpy>=1.24",
   "pandas>=2.0",
-  "PyYAML>=6.0",
+  "pyyaml>=6.0",
   "tensorflow>=2.15",
 ]
 
 [project.optional-dependencies]
+test = ["pytest>=8.0"]
 dev = ["pytest>=8.0"]
 
 [project.scripts]

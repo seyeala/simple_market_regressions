@@ -28,7 +28,12 @@ class FxProvider:
         ).sort_values("date").reset_index(drop=True)
 
     def get_latest_fx(self, asset_config) -> float:
-        raise NotImplementedError("Latest FX requires a live provider implementation or manual input")
+        """Return the latest configured FX close from the delegated historical provider."""
+
+        series = self.load_fx_series(asset_config)
+        if series.empty:
+            raise ValueError(f"No FX rows available for asset {asset_config.name}")
+        return float(series.iloc[-1]["close"])
 
 
 class FXProvider:
@@ -39,3 +44,9 @@ class FXProvider:
 
     def load_prices(self, asset_config):
         return self.delegate.load_prices(asset_config)
+
+    def get_latest_fx(self, asset_config) -> float:
+        rows = list(self.load_prices(asset_config))
+        if not rows:
+            raise ValueError(f"No FX rows available for asset {asset_config.name}")
+        return float(rows[-1]["close"])

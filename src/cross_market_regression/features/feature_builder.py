@@ -43,33 +43,55 @@ def _ratio(signal, reference, return_type: str):
     raise ValueError(f"Unsupported return_type: {return_type}")
 
 
+def _merge_on_session_date(df, session_map, session_date_column: str):
+    normalized = _normalize_daily(df)
+    return session_map[[session_date_column]].merge(normalized, left_on=session_date_column, right_on="date", how="left")
+
+
 def build_source_return_feature(source_df, session_map, feature_spec, return_type: str = "simple"):
-    df = _normalize_daily(source_df)
-    merged = session_map[["source_date"]].merge(df, left_on="source_date", right_on="date", how="left")
+    merged = _merge_on_session_date(source_df, session_map, "source_date")
     return _ratio(_price_for_mode(merged, feature_spec.signal_price_mode), _price_for_mode(merged, feature_spec.reference_price_mode), return_type)
 
 
 def build_fx_return_feature(fx_df, session_map, feature_spec, return_type: str = "simple"):
-    df = _normalize_daily(fx_df)
     # FX is aligned by target_current_date by default because it is an optional
     # predictor available before target_next_close.
-    merged = session_map[["target_current_date"]].merge(df, left_on="target_current_date", right_on="date", how="left")
+    merged = _merge_on_session_date(fx_df, session_map, "target_current_date")
     return _ratio(_price_for_mode(merged, feature_spec.signal_price_mode), _price_for_mode(merged, feature_spec.reference_price_mode), return_type)
 
 
-def build_supervised_dataset(source_data, target_data, fx_data, config):
-    import numpy as np
+def build_pair_return_feature(signal_df, reference_df, session_map, session_date_column: str, return_type: str = "simple"):
+    """Build a return from separate signal/reference asset frames.
 
+    This supports the initial example schema where a feature names two assets
+    instead of a single OHLCV asset with signal/reference price modes.
+    """
+
+    signal = _merge_on_session_date(signal_df, session_map, session_date_column)["close"]
+    reference = _merge_on_session_date(reference_df, session_map, session_date_column)["close"]
+    return _ratio(signal, reference, return_type)
+
+
+def _first_feature_asset(config, source_data: dict):
+    for feature in config.features:
+        if not feature.enabled or feature.kind == "fx_return":
+            continue
+        if feature.asset:
+            return feature.asset
+        if feature.signal_asset:
+            return feature.signal_asset
+    return next(iter(source_data), None)
+
+
+def build_supervised_dataset(source_data, target_data, fx_data, config):
     """Build supervised rows from configured source, target, and FX frames."""
 
+    import numpy as np
+
     target = _normalize_daily(target_data)
-    source_asset_key = None
-    for feature in config.features:
-        if feature.enabled and feature.kind in {"source_return", "market_return", "custom_return"}:
-            source_asset_key = feature.asset
-            break
+    source_asset_key = _first_feature_asset(config, source_data)
     if source_asset_key is None:
-        source_asset_key = next(iter(source_data))
+        raise ValueError("At least one source feature asset is required to build the session map")
     source_dates = _normalize_daily(source_data[source_asset_key])["date"]
     session_map = build_session_map(source_dates, target["date"], config.alignment.mapping_mode)
 
@@ -86,7 +108,21 @@ def build_supervised_dataset(source_data, target_data, fx_data, config):
     for feature in config.features:
         if not feature.enabled:
             continue
-        if feature.kind == "fx_return":
+        if feature.signal_asset and feature.reference_asset:
+            frames = fx_data if feature.kind == "fx_return" else source_data
+            session_date_column = "target_current_date" if feature.kind == "fx_return" else "source_date"
+            if feature.signal_asset not in frames:
+                raise ValueError(f"Missing signal data for feature {feature.name}: {feature.signal_asset}")
+            if feature.reference_asset not in frames:
+                raise ValueError(f"Missing reference data for feature {feature.name}: {feature.reference_asset}")
+            dataset[feature.name] = build_pair_return_feature(
+                frames[feature.signal_asset],
+                frames[feature.reference_asset],
+                session_map,
+                session_date_column,
+                return_type,
+            )
+        elif feature.kind == "fx_return":
             if feature.asset not in fx_data:
                 raise ValueError(f"Missing FX data for feature {feature.name}: {feature.asset}")
             dataset[feature.name] = build_fx_return_feature(fx_data[feature.asset], session_map, feature, return_type)

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 import subprocess
 
 from cross_market_regression.config import CrossMarketConfig, ModelConfig
 from cross_market_regression.data.dataset import build_dataset
+from cross_market_regression.data.dataset_builder import load_all_configured_data
+from cross_market_regression.data.registry import default_registry
+from cross_market_regression.features.feature_builder import build_supervised_dataset
 from cross_market_regression.features.scalers import StandardScaler1D
 from cross_market_regression.features.scaling import StandardScaler
 from cross_market_regression.features.supervised import split_xy
@@ -105,6 +108,15 @@ def train_cross_market_regression(dataset, feature_names: list[str], target_name
     }
     save_training_artifacts(model, scaler, metadata, metrics, history, config.model_dir)
     return {"model_dir": config.model_dir, "metadata": metadata, "metrics": metrics}
+
+
+def train_from_config(config: CrossMarketConfig, output_dir: str | None = None, registry=None) -> dict:
+    """Load configured data, build supervised rows, and train the canonical model."""
+
+    model_config = replace(config.model, model_dir=output_dir) if output_dir else config.model
+    configured = load_all_configured_data(config, registry or default_registry())
+    dataset = build_supervised_dataset(configured["sources"], configured["target"], configured["fx"], config)
+    return train_cross_market_regression(dataset, model_config.feature_names, config.target.effective_name, model_config)
 
 
 def train_model(config: CrossMarketConfig, output_dir: str) -> dict[str, object]:

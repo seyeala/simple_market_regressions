@@ -74,7 +74,7 @@ python -m cross_market_regression.cli.train_model \
   --config configs/examples/ewy_kospi.yaml
 ```
 
-The CLI defaults to the configured `model.model_dir`; `--output-dir` can override it for the legacy row-based flow.
+The CLI defaults to the configured `model.model_dir`; `--output-dir` can override it for the canonical provider-driven training flow.
 
 ## Predict
 

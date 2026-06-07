@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 
 from cross_market_regression.config import load_config
-from cross_market_regression.modeling.train import train_model
+from cross_market_regression.modeling.train import train_from_config
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -12,7 +12,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--output-dir", required=False, help="Defaults to model.model_dir from the config")
     args = parser.parse_args(argv)
     cfg = load_config(args.config)
-    result = train_model(cfg, args.output_dir or cfg.model.model_dir)
+    result = train_from_config(cfg, args.output_dir)
     print(result)
 
 

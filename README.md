@@ -67,6 +67,41 @@ SCHWAB_TOKEN_PATH=artifacts/raw/schwab/token.json
 
 Do not commit real `.env` files or token JSON files.
 
+
+## Before using actual market data
+
+Use this checklist before training against real data:
+
+1. **Install the runtime stack**: `numpy`, `pandas`, `pyyaml`, and `tensorflow` are required for real CSV loading, feature construction, training, and prediction. The lightweight test environment can pass with these tests skipped, so run the full suite in an environment where those packages are installed.
+2. **Prepare CSV inputs explicitly**: each configured CSV must include at least `date` and `close`. Historical source features that use `open`, `previous_close`, or another price mode must also include the matching column.
+3. **Keep secrets and generated data out of git**: real `.env` files, OAuth tokens, raw/processed data, logs, and generated model weights are ignored intentionally.
+4. **Run a smoke train before committing to a long run**: use a short `epochs` value and verify that the model directory contains `model.weights.h5`, `scaler.json`, `metadata.json`, `metrics.json`, and `training_history.csv`.
+5. **Verify train/predict compatibility**: the training CLI now saves scaler metadata in the same shape consumed by live prediction and explanation. After training, run `cmr-predict-live` with manual feature inputs or source/reference prices before relying on outputs.
+6. **Validate provider choice**: `csv`, `fx_csv`, and `target_csv` are local-file providers. The `schwab` provider is only an interface placeholder unless you supply a project-specific authenticated client.
+
+### CSV data contract
+
+Minimum daily CSV schema:
+
+```text
+date,close
+2024-01-02,101.50
+```
+
+Recommended OHLCV schema:
+
+```text
+date,open,high,low,close,volume
+2024-01-02,100.00,102.00,99.50,101.50,123456
+```
+
+Notes:
+
+- `date` values are normalized to `YYYY-MM-DD`.
+- Column names are lower-cased by the CSV provider.
+- `price_column` can select an alternate close-like column, such as `adjusted_close`.
+- Example configs refer to `data/raw/...` files, but raw market data is intentionally not committed.
+
 ## Train
 
 ```bash

@@ -22,3 +22,15 @@ def test_standard_scaler_fits_only_synthetic_training_rows(tmp_path):
     path = tmp_path / "scaler.json"
     scaler.save(path)
     assert StandardScaler.load(path).transform([[2.0, 10.0]]) == [[0.0, 0.0]]
+
+
+def test_standard_scaler_1d_identity_can_be_saved_for_unstandardized_models(tmp_path):
+    from cross_market_regression.features.scalers import StandardScaler1D
+
+    path = tmp_path / "scaler.json"
+    StandardScaler1D(["x"]).fit_identity().save(path)
+    loaded = StandardScaler1D.load(path)
+
+    assert loaded.feature_names == ["x"]
+    assert loaded.means == {"x": 0.0}
+    assert loaded.stds == {"x": 1.0}

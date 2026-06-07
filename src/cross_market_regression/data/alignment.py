@@ -38,3 +38,64 @@ def map_signal_to_target_calendar(signal_rows: list[dict[str, object]], target_d
             mapped["signal_date"] = mapped.pop("date")
             out.append(mapped)
     return out
+
+# Pandas-based generic session mapping for the reusable framework.
+def _as_date_series(values):
+    import pandas as pd
+
+    return pd.Series(pd.to_datetime(values).dt.strftime("%Y-%m-%d") if hasattr(values, "dt") else pd.to_datetime(list(values)).strftime("%Y-%m-%d"))
+
+
+def build_session_map(source_dates, target_dates, mapping_mode: str):
+    """Return source -> target-current -> target-next session rows.
+
+    The implementation is intentionally calendar-name agnostic: configured and
+    observed source/target date series provide the tradable sessions, so holidays
+    and weekends are skipped by selecting the next available target date.
+    """
+
+    import pandas as pd
+
+    source = sorted(pd.to_datetime(source_dates).strftime("%Y-%m-%d"))
+    target = sorted(pd.to_datetime(target_dates).strftime("%Y-%m-%d"))
+    rows: list[dict[str, str]] = []
+    if len(target) < 2:
+        return pd.DataFrame(columns=["source_date", "target_current_date", "target_next_date"])
+
+    for source_date in source:
+        if mapping_mode == "same_market_next_session":
+            currents = [date for date in target if date <= source_date]
+            if not currents:
+                continue
+            current = currents[-1]
+        elif mapping_mode in {"source_close_to_next_target_session", "custom_next_available"}:
+            currents = [date for date in target if date <= source_date]
+            current = currents[-1] if currents else target[0]
+        else:
+            raise ValueError(f"Unsupported mapping_mode: {mapping_mode}")
+        nexts = [date for date in target if date > current]
+        if not nexts:
+            continue
+        rows.append({"source_date": source_date, "target_current_date": current, "target_next_date": nexts[0]})
+    return pd.DataFrame(rows).drop_duplicates().reset_index(drop=True)
+
+
+def validate_no_lookahead(dataset) -> None:
+    """Validate generic no-lookahead invariants for a supervised dataset."""
+
+    import pandas as pd
+
+    required = {"source_date", "target_current_date", "target_next_date"}
+    missing = required - set(dataset.columns)
+    if missing:
+        raise ValueError(f"Dataset missing no-lookahead columns: {sorted(missing)}")
+    if (pd.to_datetime(dataset["target_next_date"]) <= pd.to_datetime(dataset["target_current_date"])).any():
+        raise ValueError("target_next_date must be after target_current_date")
+    raw_feature_columns = [column for column in dataset.columns if column.startswith("raw_feature") or column.startswith("feature_raw")]
+    if "target_next_close" in raw_feature_columns:
+        raise ValueError("target_next_close may not appear in raw feature columns")
+    if dataset.duplicated(["source_date", "target_current_date", "target_next_date"]).any():
+        raise ValueError("Duplicate source/target mapping rows detected")
+    if "feature_timestamp" in dataset.columns:
+        if (pd.to_datetime(dataset["feature_timestamp"]) > pd.to_datetime(dataset["target_next_date"])).any():
+            raise ValueError("Feature timestamp is after target_next_date")

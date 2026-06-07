@@ -9,9 +9,10 @@ from cross_market_regression.modeling.train import train_model
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Train a cross-market regression model")
     parser.add_argument("--config", required=True)
-    parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--output-dir", required=False, help="Defaults to model.model_dir from the config")
     args = parser.parse_args(argv)
-    result = train_model(load_config(args.config), args.output_dir)
+    cfg = load_config(args.config)
+    result = train_model(cfg, args.output_dir or cfg.model.model_dir)
     print(result)
 
 

@@ -1,247 +1,153 @@
-# Cross Market Regression
+# Cross-Market Regressions
 
-`cross-market-regression` is a reusable Python framework for training and using simple linear cross-market signal models. It keeps market choices outside code: source instruments, target instruments, references, FX inputs, feature names, target labels, and training settings are all supplied by YAML/JSON configuration.
+Reusable, config-driven framework for training, saving, reloading, explaining, and using a simple cross-market linear regression model.  A typical use case is predicting a target index or instrument's next-session return from one or more source instrument returns, optional FX returns, and optional market features.
 
 > **Warning**
 >
-> This is a statistical cross-market signal model, not a guaranteed arbitrage formula. Predictions depend on training data quality, target/source alignment, live quote quality, FX convention, and regime stability.
+> This is a statistical cross-market signal model, not a guaranteed arbitrage formula.
+> Predictions depend on training data quality, target/source alignment, live quote quality,
+> FX convention, and regime stability.
 
 ## What the framework does
 
-The framework builds a supervised regression dataset from aligned market price series, trains a one-layer linear TensorFlow/Keras model, saves the trained artifacts, and provides command-line tools to:
+The framework:
 
-- train a configured source/target model;
-- predict with a saved model from feature rows supplied at runtime;
-- inspect learned coefficients for each configured feature.
+1. Loads a YAML/JSON config into typed Python objects.
+2. Loads configured source, target, FX, and optional market series from explicit providers.
+3. Builds generic source/FX return features.
+4. Builds the target next-session return label.
+5. Trains a one-layer TensorFlow/Keras linear regression model.
+6. Saves weights, scaler state, metadata, metrics, and training history.
+7. Reloads the same architecture for prediction and coefficient explanation.
 
-At a high level:
+The front face is the notebook `notebooks/01_cross_market_regression_frontface.ipynb`; real logic lives in `src/cross_market_regression/` modules.
 
-1. Load asset price frames from configured providers.
-2. Inner-join all configured assets by common dates.
-3. Compute configured source/FX relative-return features on each aligned current date.
-4. Compute the target label from the target instrument's next aligned close divided by its current aligned close.
-5. Fit a standardized linear regression model.
-6. Persist model weights, scaler state, metadata, metrics, and training history.
+## Source return
 
-## Return definitions
-
-### Source return
-
-For a source signal price and a source reference price observed at the same aligned time `t`, the source return feature is:
+The default source feature is:
 
 ```text
 x_source_t = source_signal_price_t / source_reference_price_t - 1
 ```
 
-In YAML, this is represented by a feature with `kind: source_return`, `signal_asset`, and `reference_asset`.
+For historical training, the signal is commonly a close and the reference is commonly the regular-session open.  For live prediction, the signal can be a current or after-hours quote supplied to the prediction function.
 
-### Target return
+## Target return
 
-For a target instrument's current close and the next aligned target close, the supervised target is:
+The supervised target label is:
 
 ```text
 y_target_t = target_next_close_t / target_current_close_t - 1
 ```
 
-The framework labels the row at current date `t` with the next aligned row's target close, so each feature row is paired with a future target return only after the current row's observable features are computed.
+The predicted target level is:
+
+```text
+target_predicted_level = target_current_close * (1 + y_hat)
+```
 
 ## Configure EWY -> KOSPI
 
-The repository includes `configs/examples/ewy_kospi.yaml`, which configures an EWY-to-KOSPI example using CSV-backed data.
+Use `configs/examples/ewy_kospi.yaml` as the primary example.  It defines source, reference, target, FX, feature, and model settings outside the code.  The reusable package does not hard-code market names or coefficients.
 
-```json
-{
-  "name": "ewy_kospi_example",
-  "auth": {"provider": "csv"},
-  "assets": [
-    {"name": "source_etf", "symbol": "EWY", "provider": "csv", "csv_path": "data/raw/ewy.csv"},
-    {"name": "source_reference", "symbol": "SPY", "provider": "csv", "csv_path": "data/raw/spy.csv"},
-    {"name": "target_index", "symbol": "KOSPI", "provider": "target_csv", "csv_path": "data/raw/kospi.csv"},
-    {"name": "fx_rate", "symbol": "USDKRW", "provider": "fx_csv", "csv_path": "data/raw/usdkrw.csv"},
-    {"name": "fx_reference", "symbol": "USDKRW_REF", "provider": "fx_csv", "csv_path": "data/raw/usdkrw_ref.csv"}
-  ],
-  "features": [
-    {"name": "source_relative_return", "signal_asset": "source_etf", "reference_asset": "source_reference", "kind": "source_return"},
-    {"name": "fx_relative_return", "signal_asset": "fx_rate", "reference_asset": "fx_reference", "kind": "fx_return"}
-  ],
-  "target": {"asset": "target_index", "label": "target_next_return"},
-  "model": {"epochs": 25, "batch_size": 16, "validation_fraction": 0.2, "learning_rate": 0.01}
-}
+## Configure another pair
+
+Create another file under `configs/examples/` or your own config directory and change the configured assets/features/model directory.  Examples are provided for multiple source/target pairs, including `qqq_ndx.yaml`, `ewj_nikkei.yaml`, `ewt_taiwan.yaml`, and `soxx_semis.yaml`.
+
+## Schwab authentication
+
+Schwab credentials must come from environment variables only.  Use `.env.example` as the template:
+
+```text
+SCHWAB_API_KEY=
+SCHWAB_APP_SECRET=
+SCHWAB_CALLBACK_URL=http://localhost:8182/callback
+SCHWAB_TOKEN_PATH=artifacts/raw/schwab/token.json
 ```
 
-What this means:
-
-- `source_etf` is EWY, the source signal instrument.
-- `source_reference` is SPY, used to make EWY a relative return signal.
-- `target_index` is KOSPI, the target whose next aligned close creates `target_next_return`.
-- `fx_rate` and `fx_reference` create an additional FX relative-return feature.
-- `model` controls linear-model training hyperparameters.
-
-The configured CSV files are expected to contain at least:
-
-- a `date` column;
-- a close column named `close` unless the asset overrides `price_column`.
-
-## Configure another source/target pair using YAML only
-
-You can reuse the framework for another market pair without changing Python code. Create a new YAML file under `configs/examples/` or your own config directory and change only the config values.
-
-Example pattern:
-
-```yaml
-name: my_source_target_example
-auth:
-  provider: csv
-assets:
-  - name: source_signal
-    symbol: SOURCE
-    provider: csv
-    csv_path: data/raw/source.csv
-  - name: source_reference
-    symbol: REF
-    provider: csv
-    csv_path: data/raw/source_reference.csv
-  - name: target_market
-    symbol: TARGET
-    provider: target_csv
-    csv_path: data/raw/target.csv
-features:
-  - name: source_relative_return
-    signal_asset: source_signal
-    reference_asset: source_reference
-    kind: source_return
-target:
-  asset: target_market
-  label: target_next_return
-model:
-  epochs: 50
-  batch_size: 32
-  validation_fraction: 0.2
-  learning_rate: 0.01
-```
-
-Guidelines:
-
-- Every `features[*].signal_asset`, `features[*].reference_asset`, and `target.asset` must match an `assets[*].name`.
-- Use `kind: source_return` for a source/reference price ratio feature.
-- Use `kind: fx_return` for an FX/reference price ratio feature.
-- Add more feature entries when you want multiple explanatory variables.
-- Point `csv_path` values at local CSVs with the expected date and close columns.
-- If a file uses a different close column name, set `price_column` on that asset.
-
-## Schwab authentication via environment variables
-
-Schwab support is explicit in the configuration model, but the included Schwab price provider is a stub. The framework reads Schwab credentials from environment variables named by the auth config, so secrets do not need to be hard-coded in YAML.
-
-`.env.example` documents the expected variable names:
-
-```bash
-SCHWAB_CLIENT_ID=
-SCHWAB_CLIENT_SECRET=
-SCHWAB_REDIRECT_URI=http://localhost:8182/callback
-SCHWAB_TOKEN_PATH=.secrets/schwab_tokens.json
-```
-
-A Schwab-style auth config can reference those variable names:
-
-```yaml
-auth:
-  provider: schwab
-  client_id_env: SCHWAB_CLIENT_ID
-  client_secret_env: SCHWAB_CLIENT_SECRET
-  redirect_uri_env: SCHWAB_REDIRECT_URI
-  token_path: .secrets/schwab_tokens.json
-```
-
-At runtime, `SchwabAuth.from_config(...)` resolves `client_id`, `client_secret`, and `redirect_uri` from the process environment using `os.getenv(...)`; `token_path` comes from config. Keep the token path under an ignored secrets directory such as `.secrets/`.
+Do not commit real `.env` files or token JSON files.
 
 ## Train
 
-Train EWY -> KOSPI with:
-
 ```bash
-python -m cross_market_regression.cli.train_model --config configs/examples/ewy_kospi.yaml --output-dir artifacts/models/ewy_kospi_linear
+python -m cross_market_regression.cli.train_model \
+  --config configs/examples/ewy_kospi.yaml
 ```
 
-The requested base command is:
-
-```bash
-python -m cross_market_regression.cli.train_model --config configs/examples/ewy_kospi.yaml
-```
-
-The CLI requires `--output-dir`; the first command above writes artifacts to `artifacts/models/ewy_kospi_linear`.
+The CLI defaults to the configured `model.model_dir`; `--output-dir` can override it for the legacy row-based flow.
 
 ## Predict
 
-Predict from a saved model directory with feature rows in the same order recorded in `metadata.json`:
-
 ```bash
-python -m cross_market_regression.cli.predict_live --model-dir artifacts/models/ewy_kospi_linear --features '[[0.0123, -0.0045]]'
+python -m cross_market_regression.cli.predict_live \
+  --model-dir artifacts/models/ewy_kospi_linear \
+  --target-current-close 8639.41 \
+  --source-signal-price 197.00 \
+  --source-reference-price 212.00 \
+  --fx-signal 1533.02 \
+  --fx-reference 1516.93
 ```
 
-The requested command pattern is:
+Programmatic API:
 
-```bash
-python -m cross_market_regression.cli.predict_live --model-dir artifacts/models/ewy_kospi_linear ...
+```python
+from cross_market_regression.modeling.predict import predict_target_from_inputs
+
+pred = predict_target_from_inputs(
+    model_dir="artifacts/models/ewy_kospi_linear",
+    target_current_close=8639.41,
+    source_signal_price=197.00,
+    source_reference_price=212.00,
+    fx_signal=1533.02,
+    fx_reference=1516.93,
+)
 ```
-
-Notes:
-
-- `--features` is a JSON list of feature rows.
-- Each row must contain numeric values in the model's saved `feature_names` order.
-- `--config` is accepted for workflow symmetry, but prediction uses model metadata for feature order.
 
 ## Inspect learned coefficients
 
-Explain a saved model with:
-
 ```bash
-python -m cross_market_regression.cli.explain_model --model-dir artifacts/models/ewy_kospi_linear
+python -m cross_market_regression.cli.explain_model \
+  --model-dir artifacts/models/ewy_kospi_linear
 ```
 
-The output is JSON containing one object per feature plus the model bias, for example:
+The explanation path converts standardized TensorFlow weights back to a raw-return formula:
 
-```json
-[
-  {"feature": "source_relative_return", "coefficient": 0.123},
-  {"feature": "fx_relative_return", "coefficient": -0.045},
-  {"feature": "bias", "coefficient": 0.001}
-]
+```text
+y_hat = raw_intercept + beta_1*x_feature_1 + beta_2*x_feature_2 + ...
 ```
 
-## Calendar alignment and lookahead avoidance
+## Avoiding lookahead
 
-The default dataset builder performs an inner join across all configured asset frames by shared date. For each aligned current row:
+The alignment module maps:
 
-1. Feature values are computed only from prices present on the current aligned date.
-2. The target label is computed from the target asset's next aligned row.
-3. The last aligned row is dropped because it has no next target close.
+```text
+source_session_date_t -> target_current_session_date_t -> target_next_session_date_t
+```
 
-This avoids lookahead in feature construction because the source/reference/FX feature values for date `t` are calculated before the framework reads the target close from the next aligned date for the label. If markets have different holidays or closing times, prepare CSVs so each row's date represents the timestamp/convention you want the model to consider observable; the framework's alignment logic will then use only common aligned rows.
+Features are built from source/FX/current-session data, while `target_next_close` is used only as the label.  `validate_no_lookahead` checks duplicate mappings, invalid target date ordering, and accidental next-close leakage in raw feature columns.
 
-The data utilities also include `map_signal_to_target_calendar(...)`, which maps already-observed signal rows onto target dates by taking the most recent signal row with `signal.date <= target.date`. That rule is designed to avoid using a signal dated after the target date.
+## Saved files
 
-## Saved model artifacts
+A trained model directory contains:
 
-A training run saves these files in `--output-dir`:
+```text
+model.weights.h5
+scaler.json
+metadata.json
+metrics.json
+training_history.csv
+```
 
-- `model.weights.h5` — TensorFlow/Keras weights for the linear model.
-- `scaler.json` — fitted feature standardization parameters.
-- `metadata.json` — config name, ordered feature names, and target label.
-- `metrics.json` — evaluation metrics computed on the validation split.
-- `training_history.csv` — per-epoch training history from Keras.
+`metadata.json` records feature order, target name, split dates/counts, model settings, threshold, package version, and git commit when available.
 
-Keep the entire output directory reproducible and disposable: commit the config and source code, not the generated model files.
+## What not to commit
 
-## Files that must not be committed
+Do not commit:
 
-Do not commit secrets, raw data, generated model artifacts, runtime outputs, caches, or logs. The repository `.gitignore` excludes common examples, including:
+- real `.env` files;
+- Schwab token JSON;
+- raw market data;
+- processed/generated artifacts;
+- model weights unless explicitly intended.
 
-- `.env` and `.env.*` except `.env.example`;
-- `.secrets/`;
-- token files such as `*token*.json`, `*tokens*.json`, and `schwab_tokens.json`;
-- raw/processed data directories such as `data/raw/` and `data/processed/`;
-- generated artifacts and run outputs such as `artifacts/`, `runs/`, and `outputs/`;
-- model files such as `*.weights.h5`, `*.keras`, `*.h5`, `scaler.json`, `metadata.json`, `metrics.json`, and `training_history.csv`;
-- Python caches and test/tool caches such as `__pycache__/`, `.pytest_cache/`, `.mypy_cache/`, and `.ruff_cache/`;
-- notebook checkpoints, logs, and `*.log` files.
+Do commit source code, tests, config examples, `.env.example`, and documentation.

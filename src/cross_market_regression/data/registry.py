@@ -36,7 +36,7 @@ class ProviderRegistry:
 def default_registry() -> ProviderRegistry:
     from .csv_provider import CSVProvider
     from .fx_provider import FXProvider
-    from .schwab import SchwabPriceProvider
+    from .schwab_provider import SchwabPriceProvider
     from .target_provider import TargetProvider
 
     registry = ProviderRegistry()

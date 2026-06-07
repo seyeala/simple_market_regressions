@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
+
 from .frame import PriceFrame
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 STANDARD_COLUMNS = ["symbol", "date", "open", "high", "low", "close", "volume", "source"]
 
@@ -11,8 +15,10 @@ STANDARD_COLUMNS = ["symbol", "date", "open", "high", "low", "close", "volume", 
 class CsvPriceProvider:
     name = "csv"
 
-    def get_daily_ohlcv(self, path: str, symbol: str | None = None, date_col: str = "date") -> pd.DataFrame:
+    def get_daily_ohlcv(self, path: str, symbol: str | None = None, date_col: str = "date") -> "pd.DataFrame":
         """Load daily bars from CSV and normalize common OHLCV columns."""
+
+        import pandas as pd
 
         df = pd.read_csv(path)
         lower_map = {column: column.lower() for column in df.columns}
@@ -37,6 +43,7 @@ class CsvPriceProvider:
     def load_prices(self, asset_config) -> PriceFrame:
         if not asset_config.csv_path:
             raise ValueError(f"Asset {asset_config.name} requires csv_path for CSV provider")
+
         import pandas as pd
 
         df = self.get_daily_ohlcv(asset_config.csv_path, symbol=asset_config.symbol)

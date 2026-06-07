@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 import subprocess
 
 from cross_market_regression.config import CrossMarketConfig, ModelConfig
 from cross_market_regression.data.dataset import build_dataset
+from cross_market_regression.data.dataset_builder import load_all_configured_data
+from cross_market_regression.data.registry import default_registry
+from cross_market_regression.features.feature_builder import build_supervised_dataset
 from cross_market_regression.features.scalers import StandardScaler1D
-from cross_market_regression.features.scaling import StandardScaler
 from cross_market_regression.features.supervised import split_xy
 
 from .linear_tf_model import build_linear_model
@@ -46,6 +48,7 @@ def _split_by_dates(dataset, config: ModelConfig):
         test_mask = dates >= pd.Timestamp(config.test_start)
         if config.test_end:
             test_mask &= dates <= pd.Timestamp(config.test_end)
+    train_mask &= ~val_mask & ~test_mask
     if not val_mask.any() and not test_mask.any():
         split = max(1, int(len(df) * (1.0 - config.validation_fraction)))
         train_mask = pd.Series([idx < split for idx in range(len(df))])
@@ -64,8 +67,13 @@ def train_cross_market_regression(dataset, feature_names: list[str], target_name
         raise ValueError("Training split is empty")
     eval_df = val_df if not val_df.empty else train_df
     scaler = StandardScaler1D(feature_names=feature_names)
-    x_train = scaler.fit_transform(train_df[feature_names]) if config.standardize else train_df[feature_names].to_numpy(dtype=float)
-    x_val = scaler.transform(eval_df[feature_names]) if config.standardize else eval_df[feature_names].to_numpy(dtype=float)
+    if config.standardize:
+        x_train = scaler.fit_transform(train_df[feature_names])
+        x_val = scaler.transform(eval_df[feature_names])
+    else:
+        scaler.fit_identity(feature_names)
+        x_train = train_df[feature_names].to_numpy(dtype=float)
+        x_val = eval_df[feature_names].to_numpy(dtype=float)
     y_train = train_df[target_name].astype(float).to_numpy()
     y_val = eval_df[target_name].astype(float).to_numpy()
     model = build_linear_model(len(feature_names), config.learning_rate)
@@ -107,19 +115,45 @@ def train_cross_market_regression(dataset, feature_names: list[str], target_name
     return {"model_dir": config.model_dir, "metadata": metadata, "metrics": metrics}
 
 
-def train_model(config: CrossMarketConfig, output_dir: str) -> dict[str, object]:
-    """Backward-compatible train helper for the initial list-of-rows pipeline."""
+def _enabled_feature_names(config: CrossMarketConfig) -> list[str]:
+    return [feature.name for feature in config.features if feature.enabled]
 
+
+def _uses_pair_asset_features(config: CrossMarketConfig) -> bool:
+    enabled = [feature for feature in config.features if feature.enabled]
+    return bool(enabled) and all(feature.signal_asset and feature.reference_asset for feature in enabled)
+
+
+def _train_pair_asset_model(config: CrossMarketConfig, output_dir: str) -> dict[str, object]:
+    """Train legacy signal/reference-asset configs with modern artifacts.
+
+    The example configs use `signal_asset`/`reference_asset` pairs.  Keep that
+    schema working, but save the same scaler and metadata shape expected by live
+    prediction and explanation.
+    """
+
+    import pandas as pd
+    import tensorflow as tf
+
+    tf.keras.utils.set_random_seed(config.model.random_seed)
     rows = build_dataset(config)
-    feature_names = [feature.name for feature in config.features]
+    feature_names = _enabled_feature_names(config)
     label = config.target.effective_name
     x, y = split_xy(rows, feature_names, label)
     split = max(1, int(len(x) * (1.0 - config.model.validation_fraction)))
     x_train, y_train = x[:split], y[:split]
     x_eval, y_eval = x[split:] or x_train, y[split:] or y_train
-    scaler = StandardScaler.fit(x_train)
-    x_train_scaled = scaler.transform(x_train)
-    x_eval_scaled = scaler.transform(x_eval)
+
+    scaler = StandardScaler1D(feature_names=feature_names)
+    x_train_df = pd.DataFrame(x_train, columns=feature_names)
+    x_eval_df = pd.DataFrame(x_eval, columns=feature_names)
+    if config.model.standardize:
+        x_train_scaled = scaler.fit_transform(x_train_df)
+        x_eval_scaled = scaler.transform(x_eval_df)
+    else:
+        scaler.fit_identity(feature_names)
+        x_train_scaled = x_train_df.to_numpy(dtype=float)
+        x_eval_scaled = x_eval_df.to_numpy(dtype=float)
 
     model = build_linear_model(len(feature_names), config.model.learning_rate)
     history = model.fit(
@@ -133,11 +167,50 @@ def train_model(config: CrossMarketConfig, output_dir: str) -> dict[str, object]
     )
     predictions = [float(value[0]) for value in model.predict(x_eval_scaled, verbose=0)]
     metrics = regression_metrics(y_eval, predictions)
+    weights, bias = model.layers[-1].get_weights()
+    raw_formula = scaler.inverse_transform_coef(weights, float(bias[0]))
+
+    metadata = {
+        "config_name": config.name,
+        "model_name": config.model.model_name,
+        "model_type": "tf_keras_linear_regression",
+        "feature_names": feature_names,
+        "target_name": label,
+        "label": label,
+        "direction_threshold": config.model.direction_threshold,
+        "learning_rate": config.model.learning_rate,
+        "model_config": asdict(config.model),
+        "config": config.to_metadata_dict(),
+        "n_train": len(x_train),
+        "n_validation": len(x_eval),
+        "package_version": "0.1.0",
+        "git_commit": _git_commit(),
+        "raw_formula": raw_formula,
+    }
 
     out = ensure_model_dir(output_dir)
     model.save_weights(str(out / "model.weights.h5"))
     scaler.save(out / "scaler.json")
-    save_json({"config_name": config.name, "feature_names": feature_names, "label": label}, out / "metadata.json")
+    save_json(metadata, out / "metadata.json")
     save_json(metrics, out / "metrics.json")
     save_history_csv(out / "training_history.csv", history.history)
-    return {"rows": len(rows), "metrics": metrics, "output_dir": str(Path(output_dir))}
+    return {"rows": len(rows), "metrics": metrics, "output_dir": str(Path(output_dir)), "metadata": metadata}
+
+
+def train_model(config: CrossMarketConfig, output_dir: str) -> dict[str, object]:
+    """Train from a config and save artifacts usable by predict/explain CLIs."""
+
+    model_config = replace(config.model, model_dir=output_dir)
+    effective_config = replace(config, model=model_config)
+    if _uses_pair_asset_features(effective_config):
+        return _train_pair_asset_model(effective_config, output_dir)
+
+    registry = default_registry()
+    data = load_all_configured_data(effective_config, registry)
+    dataset = build_supervised_dataset(data["sources"], data["target"], data["fx"], effective_config)
+    return train_cross_market_regression(
+        dataset,
+        _enabled_feature_names(effective_config),
+        effective_config.target.effective_name,
+        effective_config.model,
+    )

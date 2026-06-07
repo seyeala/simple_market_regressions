@@ -25,3 +25,19 @@ def test_supervised_target_uses_next_close_no_lookahead_features_current_row():
     assert out[0]["rel"] == pytest.approx(0.1)
     assert out[0]["y"] == pytest.approx(0.1)
     assert out[0]["target_date"] == "2024-01-02"
+
+
+def test_supervised_rows_use_default_target_name_when_label_is_not_set():
+    rows = [
+        {"date": "2024-01-01", "source": 110.0, "reference": 100.0, "target": 200.0},
+        {"date": "2024-01-02", "source": 120.0, "reference": 100.0, "target": 210.0},
+    ]
+
+    out = build_supervised_rows(
+        rows,
+        [FeatureConfig(name="relative_source", signal_asset="source", reference_asset="reference")],
+        TargetConfig(asset="target"),
+    )
+
+    assert "y_target_next_return" in out[0]
+    assert out[0]["y_target_next_return"] == pytest.approx(0.05)

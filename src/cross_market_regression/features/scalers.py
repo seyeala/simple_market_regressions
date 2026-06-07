@@ -29,6 +29,12 @@ class StandardScaler1D:
     def fit_transform(self, X):
         return self.fit(X).transform(X)
 
+    def fit_identity(self, feature_names: list[str] | None = None) -> "StandardScaler1D":
+        self.feature_names = feature_names or self.feature_names
+        self.means = {name: 0.0 for name in self.feature_names}
+        self.stds = {name: 1.0 for name in self.feature_names}
+        return self
+
     def inverse_transform_coef(self, weights, bias: float) -> dict:
         import numpy as np
 

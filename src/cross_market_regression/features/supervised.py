@@ -32,7 +32,7 @@ def build_supervised_rows(
         item: dict[str, object] = {"date": current["date"], "target_date": nxt["date"]}
         for feature in features:
             item[feature.name] = compute_feature(current, feature)
-        item[target.label] = target_next_return(float(nxt[target.asset]), float(current[target.asset]))
+        item[target.effective_name] = target_next_return(float(nxt[target.asset]), float(current[target.asset]))
         output.append(item)
     return output
 

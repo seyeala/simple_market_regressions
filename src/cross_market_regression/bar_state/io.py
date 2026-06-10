@@ -7,7 +7,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-
 _REQUIRED_NUMERIC_COLUMNS = ["open", "high", "low", "last", "volume"]
 _SCHWAB_COLUMNS = {
     "Date & Time": "timestamp",
@@ -46,9 +45,16 @@ def clean_numeric(value: object) -> float:
 
 
 def parse_intraday_timestamp(series: pd.Series) -> pd.Series:
-    """Parse intraday timestamp strings into pandas timestamps."""
+    """Parse intraday timestamp strings into pandas timestamps.
 
-    parsed = pd.to_datetime(series, errors="coerce")
+    Schwab intraday exports can contain Eastern Time markers such as
+    ``09:30:00 AM ET, 06/02/2026``.  Pandas does not reliably parse the
+    timezone abbreviation in that position, so remove the market-time marker
+    before falling back to pandas' parser.
+    """
+
+    text = series.astype("string").str.replace(r"\s+ET(?=,)", "", regex=True)
+    parsed = pd.to_datetime(text, errors="coerce")
     return pd.Series(parsed, index=series.index, name=series.name)
 
 
@@ -60,7 +66,9 @@ def load_intraday_bars(path: str | Path, symbol: str) -> pd.DataFrame:
     if missing:
         raise ValueError(f"Missing required Schwab intraday columns: {missing}")
 
-    normalized = df.rename(columns=_SCHWAB_COLUMNS)[list(_SCHWAB_COLUMNS.values())].copy()
+    normalized = df.rename(columns=_SCHWAB_COLUMNS)[
+        list(_SCHWAB_COLUMNS.values())
+    ].copy()
     normalized["timestamp"] = parse_intraday_timestamp(normalized["timestamp"])
     for column in _REQUIRED_NUMERIC_COLUMNS:
         normalized[column] = normalized[column].map(clean_numeric)
@@ -72,5 +80,15 @@ def load_intraday_bars(path: str | Path, symbol: str) -> pd.DataFrame:
     normalized["time"] = normalized["timestamp"].dt.strftime("%H:%M:%S")
     normalized["symbol"] = symbol
 
-    columns = ["timestamp", "date", "time", "symbol", "open", "high", "low", "last", "volume"]
+    columns = [
+        "timestamp",
+        "date",
+        "time",
+        "symbol",
+        "open",
+        "high",
+        "low",
+        "last",
+        "volume",
+    ]
     return normalized[columns].reset_index(drop=True)

@@ -63,7 +63,9 @@ def chronological_split_by_date(
     if date_col not in dataset.columns:
         raise ValueError(f"Dataset is missing date column {date_col!r}")
 
-    df = dataset.sort_values([date_col, "timestamp"] if "timestamp" in dataset.columns else [date_col]).reset_index(drop=True)
+    df = dataset.sort_values(
+        [date_col, "timestamp"] if "timestamp" in dataset.columns else [date_col]
+    ).reset_index(drop=True)
     dates = pd.Series(sorted(pd.unique(df[date_col])))
     if train_end_date is not None or validation_end_date is not None:
         train_mask = pd.Series(True, index=df.index)
@@ -80,7 +82,11 @@ def chronological_split_by_date(
     n_dates = len(dates)
     if n_dates == 1:
         return df.copy(), df.iloc[0:0].copy(), df.iloc[0:0].copy()
-    test_fraction = 1.0 - train_fraction - validation_fraction if test_fraction is None else test_fraction
+    test_fraction = (
+        1.0 - train_fraction - validation_fraction
+        if test_fraction is None
+        else test_fraction
+    )
     if min(train_fraction, validation_fraction, test_fraction) < 0:
         raise ValueError("Split fractions must be non-negative")
 
@@ -116,14 +122,20 @@ def build_cross_asset_bar_state_dataset(
     target_key = _symbol_key(target_symbol)
     normalized_symbols = {_symbol_key(symbol): symbol for symbol in bars_by_symbol}
     if target_key not in normalized_symbols:
-        raise ValueError(f"target_symbol {target_symbol!r} is not present in bars_by_symbol")
+        raise ValueError(
+            f"target_symbol {target_symbol!r} is not present in bars_by_symbol"
+        )
     if source_symbols is None:
         source_keys = [key for key in normalized_symbols if key != target_key]
     else:
         source_keys = [_symbol_key(symbol) for symbol in source_symbols]
-    missing_sources = [symbol for symbol in source_keys if symbol not in normalized_symbols]
+    missing_sources = [
+        symbol for symbol in source_keys if symbol not in normalized_symbols
+    ]
     if missing_sources:
-        raise ValueError(f"source_symbols not present in bars_by_symbol: {missing_sources}")
+        raise ValueError(
+            f"source_symbols not present in bars_by_symbol: {missing_sources}"
+        )
 
     feature_symbols = [*source_keys]
     if include_target_state:
@@ -142,15 +154,47 @@ def build_cross_asset_bar_state_dataset(
 
     target_last_col = f"{target_key}_last"
     if target_last_col not in merged.columns:
-        target_features = build_bar_state_features(_load_or_copy(bars_by_symbol[normalized_symbols[target_key]], normalized_symbols[target_key]), symbol=target_key)
-        merged = merged.merge(target_features[[*_KEY_COLUMNS, target_last_col]], on=_KEY_COLUMNS, how="inner")
+        target_features = build_bar_state_features(
+            _load_or_copy(
+                bars_by_symbol[normalized_symbols[target_key]],
+                normalized_symbols[target_key],
+            ),
+            symbol=target_key,
+        )
+        merged = merged.merge(
+            target_features[[*_KEY_COLUMNS, target_last_col]],
+            on=_KEY_COLUMNS,
+            how="inner",
+        )
     target_col = f"{target_key}_future_log_return_{horizon_bars}"
-    merged[target_col] = np.log(merged[target_last_col].shift(-horizon_bars) / merged[target_last_col])
+    merged[target_col] = np.log(
+        merged[target_last_col].shift(-horizon_bars) / merged[target_last_col]
+    )
 
-    selected_feature_symbols = [*source_keys, *([target_key] if include_target_state else [])]
-    feature_cols = [f"{symbol}_{suffix}" for symbol in selected_feature_symbols for suffix in _FEATURE_SUFFIXES]
+    selected_feature_symbols = [
+        *source_keys,
+        *([target_key] if include_target_state else []),
+    ]
+    feature_cols = [
+        f"{symbol}_{suffix}"
+        for symbol in selected_feature_symbols
+        for suffix in _FEATURE_SUFFIXES
+    ]
     selected = [*_KEY_COLUMNS, *feature_cols, target_col]
-    dataset = merged[selected].dropna(subset=[*feature_cols, target_col]).reset_index(drop=True)
+    dataset = (
+        merged[selected]
+        .dropna(subset=[*feature_cols, target_col])
+        .reset_index(drop=True)
+    )
+
+    train_df, validation_df, test_df = chronological_split_by_date(dataset)
+    split_by_date: dict[str, str] = {}
+    split_by_date.update({date: "train" for date in train_df["date"].unique()})
+    split_by_date.update(
+        {date: "validation" for date in validation_df["date"].unique()}
+    )
+    split_by_date.update({date: "test" for date in test_df["date"].unique()})
+    dataset["split"] = dataset["date"].map(split_by_date)
 
     dataset.attrs["feature_cols"] = feature_cols
     dataset.attrs["target_col"] = target_col

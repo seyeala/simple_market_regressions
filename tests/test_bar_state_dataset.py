@@ -1,4 +1,6 @@
-import pandas as pd
+import pytest
+
+pd = pytest.importorskip("pandas")
 
 from cross_market_regression.bar_state.dataset import (
     build_cross_asset_bar_state_dataset,

@@ -90,6 +90,30 @@ class TargetConfig:
 
 
 @dataclass(frozen=True)
+class TradingLossConfig:
+    buy_offsets: tuple[float, float] = (0.001, 0.003)
+    sell_offsets: tuple[float, float] = (0.001, 0.003)
+    fee_rate: float = 0.0
+    slippage_rate: float = 0.0
+    cost_stress_multiplier: float = 1.0
+    fill_mode: Literal["hard", "soft"] = "hard"
+    soft_fill_sharpness: float = 100.0
+    gamma: float = 1.0
+    eta: float = 10.0
+    beta_1: float = 1.0
+    beta_2: float = 1.0
+    edge_margin: float = 0.0
+    policy_temperature: float = 1.0
+    ce_weight: float = 0.0
+    n_step_horizon: int = 1
+    epsilon: float = 1e-8
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "buy_offsets", tuple(self.buy_offsets))
+        object.__setattr__(self, "sell_offsets", tuple(self.sell_offsets))
+
+
+@dataclass(frozen=True)
 class AlignmentConfig:
     source_session_timezone: str | None = None
     target_session_timezone: str | None = None
@@ -145,6 +169,7 @@ class CrossMarketConfig:
     target: TargetConfig = field(default_factory=TargetConfig)
     alignment: AlignmentConfig = field(default_factory=AlignmentConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
+    trading_loss: TradingLossConfig = field(default_factory=TradingLossConfig)
 
     def asset_by_name(self) -> dict[str, AssetConfig]:
         return dict(self.assets)
@@ -160,6 +185,7 @@ class CrossMarketConfig:
             "target": asdict(self.target),
             "alignment": asdict(self.alignment),
             "model": asdict(self.model),
+            "trading_loss": asdict(self.trading_loss),
         }
 
 
@@ -170,10 +196,58 @@ def _load_mapping(path: Path) -> dict[str, Any]:
 
         data = yaml.safe_load(text)
     except ModuleNotFoundError:
-        data = json.loads(text)
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            data = _load_simple_yaml_mapping(text)
     if not isinstance(data, dict):
         raise ValueError(f"Config {path} must contain a mapping")
     return data
+
+
+def _load_simple_yaml_mapping(text: str) -> dict[str, Any]:
+    """Parse the simple YAML mappings used by tests when PyYAML is unavailable."""
+
+    def parse_scalar(value: str) -> Any:
+        value = value.strip()
+        if value in {"true", "True"}:
+            return True
+        if value in {"false", "False"}:
+            return False
+        if value in {"null", "None", "~"}:
+            return None
+        if value.startswith("[") and value.endswith("]"):
+            inner = value[1:-1].strip()
+            if not inner:
+                return []
+            return [parse_scalar(item) for item in inner.split(",")]
+        try:
+            return int(value)
+        except ValueError:
+            try:
+                return float(value)
+            except ValueError:
+                return value.strip("\"'")
+
+    root: dict[str, Any] = {}
+    stack: list[tuple[int, dict[str, Any]]] = [(-1, root)]
+    for raw_line in text.splitlines():
+        if not raw_line.strip() or raw_line.lstrip().startswith("#"):
+            continue
+        indent = len(raw_line) - len(raw_line.lstrip(" "))
+        key, separator, value = raw_line.strip().partition(":")
+        if not separator:
+            raise ValueError(f"Unsupported YAML line: {raw_line}")
+        while stack and indent <= stack[-1][0]:
+            stack.pop()
+        parent = stack[-1][1]
+        if value.strip():
+            parent[key] = parse_scalar(value)
+        else:
+            child: dict[str, Any] = {}
+            parent[key] = child
+            stack.append((indent, child))
+    return root
 
 
 def _load_auth(raw_auth: Any) -> AuthCollection:
@@ -233,6 +307,7 @@ def load_config(path: str) -> CrossMarketConfig:
         target=target,
         alignment=AlignmentConfig(**raw.get("alignment", {})),
         model=model,
+        trading_loss=TradingLossConfig(**raw.get("trading_loss", {})),
     )
     _validate_config(cfg)
     return cfg
@@ -252,3 +327,42 @@ def _validate_config(config: CrossMarketConfig) -> None:
             raise ValueError(f"Feature {feature.name} references unknown signal_asset {feature.signal_asset}")
         if feature.reference_asset and feature.reference_asset not in config.assets:
             raise ValueError(f"Feature {feature.name} references unknown reference_asset {feature.reference_asset}")
+    _validate_trading_loss_config(config.trading_loss)
+
+
+def _validate_trading_loss_config(config: TradingLossConfig) -> None:
+    if config.fill_mode not in {"hard", "soft"}:
+        raise ValueError("trading_loss.fill_mode must be one of: hard, soft")
+    if len(config.buy_offsets) != 2:
+        raise ValueError("trading_loss.buy_offsets must contain exactly two offsets")
+    if len(config.sell_offsets) != 2:
+        raise ValueError("trading_loss.sell_offsets must contain exactly two offsets")
+
+    positive_values = {
+        "soft_fill_sharpness": config.soft_fill_sharpness,
+        "policy_temperature": config.policy_temperature,
+        "epsilon": config.epsilon,
+    }
+    for name, value in positive_values.items():
+        if value <= 0:
+            raise ValueError(f"trading_loss.{name} must be positive")
+
+    non_negative_values = {
+        "fee_rate": config.fee_rate,
+        "slippage_rate": config.slippage_rate,
+        "cost_stress_multiplier": config.cost_stress_multiplier,
+        "gamma": config.gamma,
+        "eta": config.eta,
+        "beta_1": config.beta_1,
+        "beta_2": config.beta_2,
+        "edge_margin": config.edge_margin,
+        "ce_weight": config.ce_weight,
+        **{f"buy_offsets[{index}]": value for index, value in enumerate(config.buy_offsets)},
+        **{f"sell_offsets[{index}]": value for index, value in enumerate(config.sell_offsets)},
+    }
+    for name, value in non_negative_values.items():
+        if value < 0:
+            raise ValueError(f"trading_loss.{name} must be non-negative")
+
+    if config.n_step_horizon < 1:
+        raise ValueError("trading_loss.n_step_horizon must be at least 1")

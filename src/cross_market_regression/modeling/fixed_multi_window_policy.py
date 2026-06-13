@@ -31,6 +31,8 @@ class FixedMultiWindowPolicyConfig:
 
     max_bars: int = 60
     num_actions: int = 15
+    buy_offsets: tuple[float, ...] = (0.001, 0.003)
+    sell_offsets: tuple[float, ...] = (0.001, 0.003)
     windows: tuple[int, ...] = (2, 4, 8, 16, 32, 60)
     utility_dim: int = 12
     epsilon: float = 1.0e-6
@@ -43,8 +45,9 @@ class FixedMultiWindowPolicyConfig:
     def __post_init__(self) -> None:
         if self.max_bars <= 0:
             raise ValueError("max_bars must be positive")
-        if self.num_actions != 15:
-            raise ValueError("FixedMultiWindowUtilityPolicy currently requires num_actions=15")
+        expected_actions = 3 * (1 + len(self.buy_offsets) + len(self.sell_offsets))
+        if self.num_actions != expected_actions:
+            raise ValueError(f"FixedMultiWindowUtilityPolicy requires num_actions={expected_actions} for configured offsets")
         required_windows = {4, 8, 16, 32, 60}
         if not required_windows.issubset(set(self.windows)):
             raise ValueError(f"windows must include {sorted(required_windows)}")
@@ -207,9 +210,11 @@ class FixedMultiWindowUtilityPolicy(tf.keras.Model):
         ], axis=-1)
 
     def _action_components(self, dtype: tf.dtypes.DType) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
-        spot = tf.constant([0, 0, 0, 0, 0, 1, 1, 1, 1, 1, -1, -1, -1, -1, -1], dtype=dtype)
-        limit = tf.constant([0, 1, 1, -1, -1] * 3, dtype=dtype)
-        offset = tf.constant([0.0, 0.001, 0.003, 0.001, 0.003] * 3, dtype=dtype)
+        limit_template = [0.0] + [1.0] * len(self.config.buy_offsets) + [-1.0] * len(self.config.sell_offsets)
+        offset_template = [0.0] + list(self.config.buy_offsets) + list(self.config.sell_offsets)
+        spot = tf.constant([0.0] * len(limit_template) + [1.0] * len(limit_template) + [-1.0] * len(limit_template), dtype=dtype)
+        limit = tf.constant(limit_template * 3, dtype=dtype)
+        offset = tf.constant(offset_template * 3, dtype=dtype)
         return spot, limit, offset
 
 

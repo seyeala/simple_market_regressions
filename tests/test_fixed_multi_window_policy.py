@@ -59,3 +59,58 @@ def test_custom_feature_contract_indices_are_supported():
     assert state.shape == (2, 12)
     np.testing.assert_allclose(state.numpy()[:, 10], [0.0, 0.5])
     np.testing.assert_allclose(state.numpy()[:, 11], [1.0, 0.25])
+import importlib.util
+
+import numpy as np
+import pytest
+
+from cross_market_regression.modeling.trading_train import TradingTrainConfig, build_trading_model
+
+
+requires_tensorflow = pytest.mark.skipif(importlib.util.find_spec("tensorflow") is None, reason="tensorflow not installed")
+
+
+@requires_tensorflow
+def test_build_trading_model_dispatches_to_dense_logits():
+    model = build_trading_model(TradingTrainConfig(model_type="dense_logits"), ["x", "y"])
+
+    output = model(np.zeros((3, 2), dtype=np.float32), training=False)
+
+    assert output.shape == (3, 15)
+
+
+@requires_tensorflow
+def test_build_trading_model_dispatches_to_configured_fixed_policy():
+    feature_names = []
+    for bar in range(60):
+        for field in ("open", "high", "low", "close", "volume"):
+            feature_names.append(f"bar_{bar}_{field}")
+    feature_names.extend(["position_feature", "time_to_close_feature"])
+    config = TradingTrainConfig(
+        model_type="fixed_multi_window_utility_policy",
+        fixed_policy_ohlcv_feature_names=tuple(feature_names[: 60 * 5]),
+        fixed_policy_current_position_feature_name="position_feature",
+        fixed_policy_time_to_close_feature_name="time_to_close_feature",
+    )
+    model = build_trading_model(config, feature_names)
+    batch = np.ones((2, len(feature_names)), dtype=np.float32)
+    batch[:, -2] = [0.0, 1.0]
+    batch[:, -1] = [1.0, 0.5]
+
+    output = model(batch, training=False)
+
+    assert output.shape == (2, 15)
+    assert len(model.trainable_variables) == 1
+    assert model.trainable_variables[0].shape == (12,)
+
+
+def test_fixed_policy_requires_configured_ohlcv_feature_mapping():
+    config = TradingTrainConfig(model_type="fixed_multi_window_utility_policy")
+
+    with pytest.raises(ValueError, match="fixed_policy_ohlcv_feature_names"):
+        build_trading_model(config, ["x"])
+
+
+def test_build_trading_model_rejects_unknown_model_type():
+    with pytest.raises(ValueError, match="Unsupported trading model_type"):
+        build_trading_model(TradingTrainConfig(model_type="unknown"), ["x"])

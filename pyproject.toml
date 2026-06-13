@@ -16,6 +16,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Runtime dependencies come from [project] when installing the package; extras add contributor tooling.
 test = ["pytest>=8.0"]
 dev = ["pytest>=8.0"]
 

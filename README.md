@@ -54,6 +54,31 @@ Use `configs/examples/ewy_kospi.yaml` as the primary example.  It defines source
 
 Create another file under `configs/examples/` or your own config directory and change the configured assets/features/model directory.  Examples are provided for multiple source/target pairs, including `qqq_ndx.yaml`, `ewj_nikkei.yaml`, `ewt_taiwan.yaml`, and `soxx_semis.yaml`.
 
+
+## Developer setup
+
+Create and activate a virtual environment, then install the package in editable mode with developer test tooling:
+
+```bash
+python -m pip install -e ".[dev]"
+```
+
+The editable package install installs the runtime dependencies declared by the package (`numpy`, `pandas`, `pyyaml`, and `tensorflow`), while the `dev` extra adds `pytest` for local test runs.
+
+## Running tests
+
+For a minimal or lightweight validation pass, run the default test suite in your current environment:
+
+```bash
+pytest
+```
+
+Tests that require unavailable optional runtime libraries are skipped by their pytest markers or import checks. For a full local test run, first install the developer environment above so `numpy`, `pandas`, `pyyaml`, `tensorflow`, and `pytest` are available, then run:
+
+```bash
+python -m pytest
+```
+
 ## Schwab authentication
 
 Schwab credentials must come from environment variables only.  Use `.env.example` as the template:

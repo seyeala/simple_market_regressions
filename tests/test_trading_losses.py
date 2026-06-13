@@ -5,11 +5,14 @@ import pytest
 import tensorflow as tf
 
 from cross_market_regression.modeling.trading_losses import (
+    UtilityPolicyLossConfig,
     loss_from_targets,
     make_15_action_space,
     n_step_soft_dp_targets_15,
     one_step_targets_15,
     soft_best,
+    utility_policy_loss,
+    masked_policy_probabilities,
 )
 from cross_market_regression.modeling.trading_train import _validate_no_future_features
 
@@ -164,6 +167,58 @@ def test_loss_from_targets_returns_finite_masked_scalar():
     assert loss.shape == ()
     assert math.isfinite(float(loss.numpy()))
     assert float(loss.numpy()) == pytest.approx(((1.0 - 0.0) ** 2 + (2.0 - 4.0) ** 2) / 2.0)
+
+
+def test_masked_policy_probabilities_zero_illegal_actions():
+    logits = tf.constant([[0.0, 100.0, 0.0]], dtype=tf.float32)
+    mask = tf.constant([[True, False, True]])
+
+    pi = masked_policy_probabilities(logits, mask).numpy()[0]
+
+    assert pi[1] == pytest.approx(0.0)
+    assert pi[0] == pytest.approx(0.5)
+    assert pi[2] == pytest.approx(0.5)
+
+
+def test_utility_policy_loss_components_match_formula():
+    logits = tf.constant([[0.0, 0.0, 0.0]], dtype=tf.float32)
+    q_n = tf.constant([[-1.0, 2.0, 4.0]], dtype=tf.float32)
+    mask = tf.constant([[True, False, True]])
+    cfg = UtilityPolicyLossConfig(
+        beta_return=1.0,
+        beta_loss=2.0,
+        beta_missed=3.0,
+        ce_weight=0.5,
+        soft_best_temperature=1.0,
+        edge_margin=0.25,
+    )
+
+    loss, components = utility_policy_loss(logits, q_n, mask, cfg, return_components=True)
+
+    assert components["pi"].numpy()[0, 1] == pytest.approx(0.0)
+    r_pi = 0.5 * -1.0 + 0.5 * 4.0
+    legal_q = np.array([-1.0, 4.0])
+    rho_legal = np.exp(legal_q) / np.exp(legal_q).sum()
+    b_n = float((rho_legal * legal_q).sum())
+    ce = float(-np.sum(rho_legal * np.log(np.array([0.5, 0.5]))))
+    expected = -r_pi + 2.0 * max(-r_pi, 0.0) + 3.0 * max(b_n - r_pi - 0.25, 0.0) + 0.5 * ce
+
+    assert components["R_pi"].numpy()[0] == pytest.approx(r_pi)
+    assert components["B_N"].numpy()[0] == pytest.approx(b_n)
+    assert float(loss.numpy()) == pytest.approx(expected)
+
+
+def test_utility_policy_loss_stops_q_gradient_by_default():
+    logits = tf.Variable([[0.0, 0.0]], dtype=tf.float32)
+    q_n = tf.Variable([[1.0, 2.0]], dtype=tf.float32)
+    mask = tf.constant([[True, True]])
+
+    with tf.GradientTape() as tape:
+        loss = utility_policy_loss(logits, q_n, mask)
+    grad_logits, grad_q = tape.gradient(loss, [logits, q_n])
+
+    assert grad_logits is not None
+    assert grad_q is None
 
 
 @pytest.mark.parametrize("bad_name", ["close_next", "future_open", "my_high_next_feature", "FUTURE_CLOSE"])

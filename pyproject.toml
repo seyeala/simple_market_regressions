@@ -25,6 +25,7 @@ cmr-train = "cross_market_regression.cli.train_model:main"
 cmr-predict-live = "cross_market_regression.cli.predict_live:main"
 cmr-explain = "cross_market_regression.cli.explain_model:main"
 cmr-train-bar-state = "cross_market_regression.cli.train_bar_state_model:main"
+cmr-train-trading = "cross_market_regression.cli.train_trading_model:main"
 cmr-predict-bar-state = "cross_market_regression.cli.predict_bar_state_live:main"
 
 [tool.setuptools.packages.find]

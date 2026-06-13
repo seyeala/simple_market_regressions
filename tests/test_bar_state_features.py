@@ -1,6 +1,7 @@
-import numpy as np
-import pandas as pd
 import pytest
+
+np = pytest.importorskip("numpy")
+pd = pytest.importorskip("pandas")
 
 from cross_market_regression.bar_state.features import build_bar_state_features
 

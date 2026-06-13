@@ -79,7 +79,7 @@ Tests that require unavailable optional runtime libraries are skipped by their p
 python -m pytest
 ```
 
-## Schwab authentication
+## Schwab authentication and provider behavior
 
 Schwab credentials must come from environment variables only.  Use `.env.example` as the template:
 
@@ -90,7 +90,11 @@ SCHWAB_CALLBACK_URL=http://localhost:8182/callback
 SCHWAB_TOKEN_PATH=artifacts/raw/schwab/token.json
 ```
 
-Do not commit real `.env` files or token JSON files.
+Do not commit real `.env` files or token JSON files.  `create_schwab_client` reads the environment variable names from the auth config and returns a credential bundle; production code should pass a project-specific authenticated Schwab client into `SchwabPriceProvider(client=...)`.
+
+`SchwabPriceProvider` supports daily history, intraday history, and quote snapshots when that injected client implements `get_daily_ohlcv`, `get_intraday_ohlcv`, and `get_quote_snapshot`.  SDK-style clients with `get_price_history` / `get_quotes` are also accepted.  Historical daily and intraday payloads are normalized to the same `symbol,date,open,high,low,close,volume,source` schema used by CSV providers.
+
+Historical Schwab responses are cached as JSON under `artifacts/raw/schwab` by default.  Pass `cache_dir=...` to change the location or `use_cache=False` on history calls to bypass reading and writing cache files.  Quote snapshots are treated as live data and are not cached.
 
 
 ## Before using actual market data
@@ -102,7 +106,7 @@ Use this checklist before training against real data:
 3. **Keep secrets and generated data out of git**: real `.env` files, OAuth tokens, raw/processed data, logs, and generated model weights are ignored intentionally.
 4. **Run a smoke train before committing to a long run**: use a short `epochs` value and verify that the model directory contains `model.weights.h5`, `scaler.json`, `metadata.json`, `metrics.json`, and `training_history.csv`.
 5. **Verify train/predict compatibility**: the training CLI now saves scaler metadata in the same shape consumed by live prediction and explanation. After training, run `cmr-predict-live` with manual feature inputs or source/reference prices before relying on outputs.
-6. **Validate provider choice**: `csv`, `fx_csv`, and `target_csv` are local-file providers. The `schwab` provider is only an interface placeholder unless you supply a project-specific authenticated client.
+6. **Validate provider choice**: `csv`, `fx_csv`, and `target_csv` are local-file providers. The `schwab` provider requires a supplied project-specific authenticated client for live API access; without one it raises an explicit `NotImplementedError`.
 
 ### CSV data contract
 

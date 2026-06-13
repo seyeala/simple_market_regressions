@@ -98,6 +98,53 @@ class AlignmentConfig:
 
 
 @dataclass(frozen=True)
+class TradingLossConfig:
+    """Configuration for trading-target loss construction."""
+
+    buy_offsets: tuple[float, float] = (0.001, 0.003)
+    sell_offsets: tuple[float, float] = (0.001, 0.003)
+    fee_rate: float = 0.0
+    slippage_rate: float = 0.0
+    x_cost: float = 1.0
+    fill_mode: str = "soft"
+    fill_sharpness: float = 1000.0
+    gamma: float = 1.0
+    eta: float = 1.0
+    beta_1: float = 1.0
+    beta_2: float = 1.0
+    edge_margin: float = 0.0
+    policy_temperature: float = 1.0
+    ce_weight: float = 0.0
+    n_steps: int = 1
+    epsilon: float = 1e-8
+
+    def __post_init__(self) -> None:
+        buy_offsets = tuple(float(offset) for offset in self.buy_offsets)
+        sell_offsets = tuple(float(offset) for offset in self.sell_offsets)
+        object.__setattr__(self, "buy_offsets", buy_offsets)
+        object.__setattr__(self, "sell_offsets", sell_offsets)
+
+        if self.fill_mode not in {"soft", "hard"}:
+            raise ValueError("fill_mode must be one of: 'soft', 'hard'")
+        if self.fill_sharpness <= 0.0:
+            raise ValueError("fill_sharpness must be positive")
+        if self.policy_temperature <= 0.0:
+            raise ValueError("policy_temperature must be positive")
+        if self.eta <= 0.0:
+            raise ValueError("eta must be positive")
+        if self.n_steps < 1:
+            raise ValueError("n_steps must be at least 1")
+        if len(buy_offsets) != 2:
+            raise ValueError("buy_offsets must contain exactly two offsets")
+        if len(sell_offsets) != 2:
+            raise ValueError("sell_offsets must contain exactly two offsets")
+        if any(offset < 0.0 for offset in buy_offsets):
+            raise ValueError("buy_offsets must be non-negative")
+        if any(offset < 0.0 for offset in sell_offsets):
+            raise ValueError("sell_offsets must be non-negative")
+
+
+@dataclass(frozen=True)
 class ModelConfig:
     model_name: str = "default_linear"
     feature_names: list[str] = field(default_factory=list)
@@ -145,6 +192,7 @@ class CrossMarketConfig:
     target: TargetConfig = field(default_factory=TargetConfig)
     alignment: AlignmentConfig = field(default_factory=AlignmentConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
+    trading_loss: TradingLossConfig = field(default_factory=TradingLossConfig)
 
     def asset_by_name(self) -> dict[str, AssetConfig]:
         return dict(self.assets)
@@ -160,6 +208,7 @@ class CrossMarketConfig:
             "target": asdict(self.target),
             "alignment": asdict(self.alignment),
             "model": asdict(self.model),
+            "trading_loss": asdict(self.trading_loss),
         }
 
 
@@ -233,6 +282,7 @@ def load_config(path: str) -> CrossMarketConfig:
         target=target,
         alignment=AlignmentConfig(**raw.get("alignment", {})),
         model=model,
+        trading_loss=TradingLossConfig(**raw.get("trading_loss", {})),
     )
     _validate_config(cfg)
     return cfg

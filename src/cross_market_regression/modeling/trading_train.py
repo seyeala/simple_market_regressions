@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
 
@@ -38,6 +38,7 @@ class TradingTrainConfig:
     test_end: str | None = None
     validation_fraction: float = 0.2
     standardize: bool = True
+    model_type: str = "dense_logits"
     learning_rate: float = 0.001
     epochs: int = 10
     batch_size: int = 32
@@ -55,6 +56,22 @@ class TradingTrainConfig:
     edge_margin: float = 0.0
     ce_weight: float = 0.0
     n_step_horizon: int = 1
+    fixed_policy_max_bars: int = 60
+    fixed_policy_windows: tuple[int, ...] = (2, 4, 8, 16, 32, 60)
+    fixed_policy_utility_dim: int = 12
+    fixed_policy_epsilon: float = 1.0e-6
+    fixed_policy_alpha: float = 1.0
+    fixed_policy_kappa: float = 0.5
+    fixed_policy_zeta: float = 0.25
+    fixed_policy_tau_pi: float = 1.0
+    fixed_policy_ohlcv_feature_names: tuple[str, ...] = ()
+    fixed_policy_ohlcv_fields: tuple[str, ...] = ("open", "high", "low", "close", "volume")
+    fixed_policy_feature_contract: Mapping[str, int] = field(default_factory=lambda: {"open": 0, "high": 1, "low": 2, "close": 3, "volume": 4})
+    fixed_policy_current_position_feature_name: str | None = None
+    fixed_policy_time_to_close_feature_name: str | None = None
+
+
+_SUPPORTED_MODEL_TYPES = {"dense_logits", "fixed_multi_window_utility_policy"}
 
 
 def build_trading_logits_model(input_dim: int, learning_rate: float = 0.001):
@@ -67,6 +84,123 @@ def build_trading_logits_model(input_dim: int, learning_rate: float = 0.001):
     model = tf.keras.Model(inputs=inputs, outputs=outputs)
     model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate))
     return model
+
+
+def _flat_feature_fixed_policy_model(
+    policy: Any,
+    ohlcv_indices: np.ndarray,
+    num_ohlcv_fields: int,
+    current_position_index: int | None,
+    time_to_close_index: int | None,
+):
+    """Create a Keras adapter from flat feature rows to fixed-policy logits."""
+
+    import tensorflow as tf
+
+    class Adapter(tf.keras.Model):
+        def __init__(self) -> None:
+            super().__init__()
+            self.policy = policy
+            self._ohlcv_indices = tf.constant(ohlcv_indices, dtype=tf.int32)
+            self._num_ohlcv_fields = int(num_ohlcv_fields)
+            self._current_position_index = current_position_index
+            self._time_to_close_index = time_to_close_index
+
+        def call(self, inputs: Any, training: bool = False) -> Any:
+            del training
+            x = tf.convert_to_tensor(inputs, dtype=tf.float32)
+            batch = tf.shape(x)[0]
+            flat = tf.gather(x, self._ohlcv_indices, axis=1)
+            ohlcv = tf.reshape(flat, [batch, policy.config.max_bars, self._num_ohlcv_fields])
+            if self._current_position_index is None:
+                current_position = tf.zeros([batch], dtype=x.dtype)
+            else:
+                current_position = x[:, self._current_position_index]
+            if self._time_to_close_index is None:
+                time_to_close = tf.ones([batch], dtype=x.dtype)
+            else:
+                time_to_close = x[:, self._time_to_close_index]
+            return self.policy.logits(
+                {"ohlcv": ohlcv, "current_position": current_position, "time_to_close": time_to_close}
+            )
+
+    return Adapter()
+
+
+def _build_fixed_policy_config(config: TradingTrainConfig):
+    from .fixed_multi_window_policy import FixedMultiWindowPolicyConfig, OHLCVFeatureContract
+
+    contract_values = {
+        field: int(config.fixed_policy_feature_contract[field])
+        for field in ("open", "high", "low", "close", "volume")
+    }
+    num_fields = len(config.fixed_policy_ohlcv_fields)
+    out_of_range = {field: index for field, index in contract_values.items() if index < 0 or index >= num_fields}
+    if out_of_range:
+        raise ValueError(f"fixed_policy_feature_contract indices must fit fixed_policy_ohlcv_fields: {out_of_range}")
+    return FixedMultiWindowPolicyConfig(
+        max_bars=config.fixed_policy_max_bars,
+        num_actions=3 * (1 + len(config.buy_offsets) + len(config.sell_offsets)),
+        buy_offsets=config.buy_offsets,
+        sell_offsets=config.sell_offsets,
+        windows=config.fixed_policy_windows,
+        utility_dim=config.fixed_policy_utility_dim,
+        epsilon=config.fixed_policy_epsilon,
+        alpha=config.fixed_policy_alpha,
+        kappa=config.fixed_policy_kappa,
+        zeta=config.fixed_policy_zeta,
+        tau_pi=config.fixed_policy_tau_pi,
+        feature_contract=OHLCVFeatureContract(**contract_values),
+    )
+
+
+def _feature_index(feature_names: Sequence[str], name: str | None) -> int | None:
+    if name is None:
+        return None
+    try:
+        return feature_names.index(name)
+    except ValueError as exc:
+        raise ValueError(f"Configured fixed-policy feature {name!r} is not present in feature_names") from exc
+
+
+def _fixed_policy_ohlcv_indices(config: TradingTrainConfig, feature_names: Sequence[str]) -> np.ndarray:
+    expected = config.fixed_policy_max_bars * len(config.fixed_policy_ohlcv_fields)
+    names = tuple(config.fixed_policy_ohlcv_feature_names)
+    if len(names) != expected:
+        raise ValueError(
+            "fixed_policy_ohlcv_feature_names must contain "
+            f"max_bars * len(fixed_policy_ohlcv_fields) names ({expected}), got {len(names)}"
+        )
+    return np.asarray([_feature_index(feature_names, name) for name in names], dtype=np.int32)
+
+
+def build_trading_model(config: TradingTrainConfig, feature_names: Sequence[str]):
+    """Build the configured 15-action trading model for ``feature_names``.
+
+    ``dense_logits`` preserves the original single dense logits layer.
+    ``fixed_multi_window_utility_policy`` adapts configured flat OHLCV feature
+    columns into the reusable 12-weight fixed multi-window policy.
+    """
+
+    model_type = config.model_type
+    if model_type == "dense_logits":
+        return build_trading_logits_model(len(feature_names), config.learning_rate)
+    if model_type == "fixed_multi_window_utility_policy":
+        from .fixed_multi_window_policy import build_fixed_multi_window_policy
+
+        policy = build_fixed_multi_window_policy(_build_fixed_policy_config(config))
+        adapter = _flat_feature_fixed_policy_model(
+            policy=policy,
+            ohlcv_indices=_fixed_policy_ohlcv_indices(config, feature_names),
+            num_ohlcv_fields=len(config.fixed_policy_ohlcv_fields),
+            current_position_index=_feature_index(feature_names, config.fixed_policy_current_position_feature_name),
+            time_to_close_index=_feature_index(feature_names, config.fixed_policy_time_to_close_feature_name),
+        )
+        import tensorflow as tf
+
+        adapter.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=config.learning_rate))
+        return adapter
+    raise ValueError(f"Unsupported trading model_type {model_type!r}; expected one of {sorted(_SUPPORTED_MODEL_TYPES)}")
 
 
 def _validate_no_future_features(feature_names: Sequence[str]) -> None:
@@ -171,7 +305,7 @@ def train_trading_model(dataset: Any, feature_names: list[str], config: TradingT
         x_train = train_df[feature_names].to_numpy(dtype=float)
         x_eval = eval_df[feature_names].to_numpy(dtype=float)
 
-    model = model or build_trading_logits_model(len(feature_names), config.learning_rate)
+    model = model or build_trading_model(config, feature_names)
     if not hasattr(model, "optimizer") or model.optimizer is None:
         model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=config.learning_rate))
     _assert_logits_shape(model, x_train.astype("float32"))
@@ -202,7 +336,8 @@ def train_trading_model(dataset: Any, feature_names: list[str], config: TradingT
     metrics = {"loss": history["loss"][-1], "val_loss": history["val_loss"][-1]}
     metadata = {
         "model_name": config.model_name,
-        "model_type": "tf_keras_trading_15_action_logits",
+        "model_type": config.model_type,
+        "model_artifact_type": "tf_keras_trading_15_action_logits",
         "feature_names": feature_names,
         "action_offsets": {"buy_offsets": list(config.buy_offsets), "sell_offsets": list(config.sell_offsets)},
         "fee_rate": config.fee_rate,

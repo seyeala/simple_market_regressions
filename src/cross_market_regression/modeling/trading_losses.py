@@ -63,7 +63,7 @@ def make_15_action_space(
 def relu_step(x: Any, sharpness: Any) -> tf.Tensor:
     """Continuous clipped ramp approximation to a step function."""
 
-    return tf.clip_by_value(tf.nn.relu(tf.convert_to_tensor(x) * sharpness), 0.0, 1.0)
+    return tf.clip_by_value(tf.convert_to_tensor(x) * sharpness + 0.5, 0.0, 1.0)
 
 
 def _get(source: Any, name: str, default: Any = None) -> Any:
@@ -161,7 +161,8 @@ def soft_best(q_values: Any, legal_mask: Any, eta: Any) -> tf.Tensor:
     neg_inf = tf.constant(-1.0e9, dtype=q.dtype)
     masked_q = tf.where(mask, q, neg_inf)
     hard = tf.reduce_max(masked_q, axis=-1)
-    soft = tf.reduce_logsumexp(masked_q * eta, axis=-1) / eta
+    weights = tf.nn.softmax(masked_q * eta, axis=-1)
+    soft = tf.reduce_sum(tf.where(mask, weights * q, tf.zeros_like(q)), axis=-1)
     return tf.where(eta > 0.0, soft, hard)
 
 

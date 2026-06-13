@@ -187,6 +187,131 @@ def n_step_soft_dp_targets_15(batches: Sequence[Any], actions: ActionSpace15, co
     return targets
 
 
+@dataclass(frozen=True)
+class UtilityPolicyLossConfig:
+    """Configuration for the utility policy architecture loss.
+
+    ``beta_return`` scales the negative expected-return objective,
+    ``beta_loss`` scales the downside/loss penalty, ``beta_missed`` scales the
+    missed-opportunity penalty, and ``ce_weight`` scales the optional
+    distribution-matching cross entropy against the soft-best target
+    distribution.
+    """
+
+    beta_return: float = 1.0
+    beta_loss: float = 1.0
+    beta_missed: float = 1.0
+    ce_weight: float = 0.0
+    soft_best_temperature: float = 1.0
+    edge_margin: float = 0.0
+    stop_gradient_q: bool = True
+
+
+def _masked_logits(logits: tf.Tensor, legal_mask: tf.Tensor) -> tf.Tensor:
+    neg_inf = tf.constant(-1.0e9, dtype=logits.dtype)
+    return tf.where(legal_mask, logits, neg_inf)
+
+
+def masked_policy_probabilities(logits: Any, legal_mask: Any, epsilon: float = 1e-8) -> tf.Tensor:
+    """Convert action logits to probabilities while assigning zero mass to illegal actions."""
+
+    z = tf.convert_to_tensor(logits, dtype=tf.float32)
+    mask = tf.convert_to_tensor(legal_mask, dtype=tf.bool)
+    pi = tf.nn.softmax(_masked_logits(z, mask), axis=-1)
+    pi = tf.where(mask, pi, tf.zeros_like(pi))
+    denom = tf.reduce_sum(pi, axis=-1, keepdims=True)
+    return pi / tf.maximum(denom, tf.cast(epsilon, pi.dtype))
+
+
+def soft_best_target_distribution(q_values: Any, legal_mask: Any, temperature: Any = 1.0) -> tuple[tf.Tensor, tf.Tensor]:
+    """Return ``(B_N, rho)`` for masked soft-best utility targets.
+
+    ``rho`` is the masked Boltzmann distribution over ``Q_N``. ``B_N`` is its
+    expected target value, which approaches the hard legal maximum as the
+    temperature approaches zero.
+    """
+
+    q = tf.convert_to_tensor(q_values, dtype=tf.float32)
+    mask = tf.convert_to_tensor(legal_mask, dtype=tf.bool)
+    tau = tf.cast(temperature, q.dtype)
+    safe_tau = tf.maximum(tau, tf.constant(1e-8, dtype=q.dtype))
+    rho = tf.nn.softmax(_masked_logits(q / safe_tau, mask), axis=-1)
+    rho = tf.where(mask, rho, tf.zeros_like(rho))
+    denom = tf.reduce_sum(rho, axis=-1, keepdims=True)
+    rho = rho / tf.maximum(denom, tf.constant(1e-8, dtype=q.dtype))
+    b_n = tf.reduce_sum(rho * q, axis=-1)
+    return b_n, rho
+
+
+def utility_policy_loss(
+    logits: Any,
+    q_values: Any,
+    legal_mask: Any,
+    config: UtilityPolicyLossConfig | Mapping[str, Any] | None = None,
+    reduction: str = "mean",
+    return_components: bool = False,
+) -> tf.Tensor | tuple[tf.Tensor, dict[str, tf.Tensor]]:
+    """Reusable architecture loss for a masked utility policy.
+
+    The loss combines negative expected return, downside loss, missed
+    opportunity relative to a soft-best target, and an optional cross-entropy
+    distribution-matching term. By default the supplied ``Q_N`` targets are
+    treated as fixed targets via ``tf.stop_gradient``.
+    """
+
+    cfg = config or UtilityPolicyLossConfig()
+    beta_return = tf.cast(_cfg(cfg, "beta_return", 1.0), tf.float32)
+    beta_loss = tf.cast(_cfg(cfg, "beta_loss", 1.0), tf.float32)
+    beta_missed = tf.cast(_cfg(cfg, "beta_missed", 1.0), tf.float32)
+    ce_weight = tf.cast(_cfg(cfg, "ce_weight", 0.0), tf.float32)
+    temperature = tf.cast(_cfg(cfg, "soft_best_temperature", 1.0), tf.float32)
+    edge_margin = tf.cast(_cfg(cfg, "edge_margin", 0.0), tf.float32)
+    stop_gradient_q = bool(_cfg(cfg, "stop_gradient_q", True))
+
+    q_n = tf.convert_to_tensor(q_values, dtype=tf.float32)
+    if stop_gradient_q:
+        q_n = tf.stop_gradient(q_n)
+    mask = tf.convert_to_tensor(legal_mask, dtype=tf.bool)
+    pi = masked_policy_probabilities(logits, mask)
+    r_pi = tf.reduce_sum(pi * q_n, axis=-1)
+    b_n, rho = soft_best_target_distribution(q_n, mask, temperature)
+
+    negative_expected_return = -r_pi
+    loss_penalty = tf.nn.relu(-r_pi)
+    missed_opportunity_penalty = tf.nn.relu(b_n - r_pi - edge_margin)
+    cross_entropy = -tf.reduce_sum(rho * tf.math.log(tf.maximum(pi, tf.constant(1e-8, dtype=pi.dtype))), axis=-1)
+
+    per_example = (
+        beta_return * negative_expected_return
+        + beta_loss * loss_penalty
+        + beta_missed * missed_opportunity_penalty
+        + ce_weight * cross_entropy
+    )
+
+    if reduction == "none":
+        loss = per_example
+    elif reduction == "sum":
+        loss = tf.reduce_sum(per_example)
+    elif reduction == "mean":
+        loss = tf.reduce_mean(per_example)
+    else:
+        raise ValueError("reduction must be 'mean', 'sum', or 'none'")
+
+    if not return_components:
+        return loss
+    return loss, {
+        "pi": pi,
+        "R_pi": r_pi,
+        "B_N": b_n,
+        "rho": rho,
+        "negative_expected_return": negative_expected_return,
+        "loss_penalty": loss_penalty,
+        "missed_opportunity_penalty": missed_opportunity_penalty,
+        "cross_entropy": cross_entropy,
+        "per_example": per_example,
+    }
+
+
 def loss_from_targets(q_values: Any, targets: Any, legal_mask: Any | None = None, reduction: str = "mean") -> tf.Tensor:
     """Squared-error loss against pre-costed targets; no costs are subtracted."""
 

@@ -1,8 +1,9 @@
 import math
 
-import numpy as np
 import pytest
-import tensorflow as tf
+
+np = pytest.importorskip("numpy")
+tf = pytest.importorskip("tensorflow")
 
 from cross_market_regression.modeling.trading_losses import (
     UtilityPolicyLossConfig,

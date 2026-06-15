@@ -1,17 +1,13 @@
-import importlib.util
-
-import numpy as np
 import pytest
-import tensorflow as tf
+
+np = pytest.importorskip("numpy")
+tf = pytest.importorskip("tensorflow")
 
 from cross_market_regression.modeling.fixed_multi_window_policy import (
     FixedMultiWindowPolicyConfig,
     FixedMultiWindowUtilityPolicy,
 )
 from cross_market_regression.modeling.trading_train import TradingTrainConfig, build_trading_model
-
-
-requires_tensorflow = pytest.mark.skipif(importlib.util.find_spec("tensorflow") is None, reason="tensorflow not installed")
 
 
 def _ohlcv(batch=2, bars=60, fields=5):
@@ -29,7 +25,6 @@ def _flat_feature_names(bars=60, fields=("open", "high", "low", "close", "volume
     return [f"bar_{bar}_{field}" for bar in range(bars) for field in fields]
 
 
-@requires_tensorflow
 def test_policy_logits_have_15_action_shape():
     model = FixedMultiWindowUtilityPolicy()
     inputs = {"ohlcv": _ohlcv(batch=3), "current_position": [0.0, 1.0, -1.0], "time_to_close": [1.0, 0.5, 0.1]}
@@ -39,7 +34,6 @@ def test_policy_logits_have_15_action_shape():
     assert logits.shape == (3, 15)
 
 
-@requires_tensorflow
 def test_policy_probabilities_sum_to_one_across_legal_actions():
     model = FixedMultiWindowUtilityPolicy()
     inputs = {"ohlcv": _ohlcv(batch=2), "current_position": [1.0, -1.0], "time_to_close": [1.0, 0.5]}
@@ -50,7 +44,6 @@ def test_policy_probabilities_sum_to_one_across_legal_actions():
     np.testing.assert_allclose(np.sum(np.where(legal_mask, probabilities, 0.0), axis=-1), np.ones(2), rtol=1e-6)
 
 
-@requires_tensorflow
 def test_illegal_actions_receive_zero_probability():
     model = FixedMultiWindowUtilityPolicy()
     inputs = {"ohlcv": _ohlcv(batch=1), "current_position": [1.0], "time_to_close": [1.0]}
@@ -63,7 +56,6 @@ def test_illegal_actions_receive_zero_probability():
     np.testing.assert_allclose(probabilities[~mask], np.zeros(np.sum(~mask)), atol=0.0)
 
 
-@requires_tensorflow
 def test_policy_trainable_parameter_count_is_exactly_12():
     model = FixedMultiWindowUtilityPolicy()
 
@@ -72,7 +64,6 @@ def test_policy_trainable_parameter_count_is_exactly_12():
     assert model.count_trainable_parameters() == 12
 
 
-@requires_tensorflow
 def test_future_padded_bars_do_not_affect_output_when_masked_out():
     model = FixedMultiWindowUtilityPolicy(FixedMultiWindowPolicyConfig(max_bars=65, windows=(2, 4, 8, 16, 32, 60, 65)))
     current_position = [0.0, 0.5]
@@ -89,7 +80,6 @@ def test_future_padded_bars_do_not_affect_output_when_masked_out():
     np.testing.assert_allclose(padded.numpy(), unpadded.numpy(), rtol=1e-6, atol=1e-6)
 
 
-@requires_tensorflow
 def test_configurable_dimensions_windows_and_offsets_are_honored():
     config = FixedMultiWindowPolicyConfig(
         max_bars=65,
@@ -113,7 +103,6 @@ def test_configurable_dimensions_windows_and_offsets_are_honored():
     np.testing.assert_allclose(offsets.numpy()[1:5], [0.002, 0.004, 0.005, 0.007])
 
 
-@requires_tensorflow
 def test_custom_feature_contract_indices_are_supported():
     model = FixedMultiWindowUtilityPolicy(FixedMultiWindowPolicyConfig())
     state = model.state_vector(_ohlcv(batch=2), [0.0, 0.5], [1.0, 0.25])
@@ -123,7 +112,6 @@ def test_custom_feature_contract_indices_are_supported():
     np.testing.assert_allclose(state.numpy()[:, 11], [1.0, 0.25])
 
 
-@requires_tensorflow
 def test_build_trading_model_factory_preserves_dense_logits_behavior():
     model = build_trading_model(TradingTrainConfig(model_type="dense_logits"), ["x", "y"])
 
@@ -134,7 +122,6 @@ def test_build_trading_model_factory_preserves_dense_logits_behavior():
     assert model.layers[-1].units == 15
 
 
-@requires_tensorflow
 def test_build_trading_model_factory_dispatches_to_configured_fixed_policy():
     feature_names = _flat_feature_names()
     feature_names.extend(["position_feature", "time_to_close_feature"])
